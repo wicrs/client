@@ -1,0 +1,8 @@
+[package]
+name = "client"
+version = "0.0.0"
+authors = ["willemml <willem@leit.so>"]
+edition = "2018"
+license = "GPL-3.0"
+description = "A client for wicrs_server."
+repository = "https://github.com/wicrs/client"
