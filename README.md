@@ -3,4 +3,4 @@
 [![docs.rs](https://docs.rs/wicrs_client/badge.svg)](https://docs.rs/wicrs_client)
 
 
-This will eventually be a client of some sort for WICRS, probably CLI or Desktop.
+A client for WICRS Server, built using `wicrs_api`.
