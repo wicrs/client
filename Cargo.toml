@@ -9,3 +9,4 @@ repository = "https://github.com/wicrs/client"
 
 [dependencies]
 wicrs_api = "0.2"
+serde = "1.0"

@@ -3144,6 +3144,7 @@ dependencies = [
 name = "wicrs_client"
 version = "0.1.0"
 dependencies = [
+ "serde",
  "wicrs_api",
 ]
 
