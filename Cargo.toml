@@ -8,5 +8,10 @@ description = "A client for wicrs_server."
 repository = "https://github.com/wicrs/client"
 
 [dependencies]
-wicrs_api = "0.2"
-serde = "1.0"
+wicrs_server = { git = "https://github.com/wicrs/server", branch = "gpg" }
+tokio-tungstenite = "*"
+pgp = "0.7"
+hex = "0.4"
+reqwest = { version = "0.11", features = ["json"] }
+tokio = { version = "1.5", default-features = false, features = ["macros"] }
+futures-util = { version = "0.3", default-features = false, features = ["async-await", "sink", "std"] }
