@@ -1,12 +1,23 @@
 [package]
-name = "wicrs_client"
-version = "0.1.0"
 authors = ["willemml <willem@leit.so>"]
+description = "A client for wicrs_server."
 edition = "2018"
 license = "GPL-3.0"
-description = "A client for wicrs_server."
+name = "wicrs_client"
 repository = "https://github.com/wicrs/client"
+version = "0.1.0"
 
 [dependencies]
-wicrs_api = "0.2"
-serde = "1.0"
+crossterm = "0.22"
+log = "0.4"
+tokio = {version = "1.5", features = [
+  "macros",
+  "fs",
+  "sync",
+  "rt",
+  "rt-multi-thread",
+]}
+chrono = { version = "0.4", features = ["serde"] }
+tui = {git = "https://github.com/fdehau/tui-rs"}
+uuid = {version = "0.8", features = ["v4", "serde"]}
+wicrs_api = {git = "https://github.com/wicrs/api", features = ["wicrs-server-full"]}
