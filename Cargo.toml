@@ -18,6 +18,11 @@ tokio = {version = "1.5", features = [
   "rt-multi-thread",
 ]}
 chrono = { version = "0.4", features = ["serde"] }
-tui = {git = "https://github.com/fdehau/tui-rs"}
+#tui = {git = "https://github.com/fdehau/tui-rs"}
 uuid = {version = "0.8", features = ["v4", "serde"]}
 wicrs_api = {git = "https://github.com/wicrs/api", features = ["wicrs-server-full"]}
+
+[dependencies.cursive]
+version = "0.16"
+default-features = false
+features = ["crossterm-backend"]

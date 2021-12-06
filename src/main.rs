@@ -1,21 +1,28 @@
+use cursive::align::HAlign;
+use cursive::menu::MenuTree;
+use cursive::theme::Theme;
+use cursive::traits::Boxable;
+use cursive::view::SizeConstraint;
+use cursive::views::Dialog;
+use cursive::views::EditView;
+use cursive::views::LinearLayout;
+use cursive::views::ListView;
+use cursive::views::Menubar;
+use cursive::views::OnLayoutView;
+use cursive::views::Panel;
+use cursive::views::TextArea;
+use cursive::views::TextView;
+use cursive::CursiveRunnable;
+use cursive::View;
 use std::collections::HashMap;
-use std::io::{self, Stdout};
-use tui::backend::CrosstermBackend;
-use tui::layout::{Constraint, Direction, Layout};
-use tui::text::{Spans, Text};
-use tui::widgets::{Block, Borders, Paragraph};
-use tui::Terminal;
 use uuid::Uuid;
 use wicrs_api::wicrs_server::channel::Message;
 use wicrs_api::wicrs_server::prelude::Hub;
 
 #[tokio::main]
-async fn main() -> Result<(), io::Error> {
+async fn main() -> Result<(), std::io::Error> {
+    let siv = cursive::default();
     let user_id = Uuid::new_v4();
-    let stdout = io::stdout();
-    let backend = CrosstermBackend::new(stdout);
-    let mut terminal = Terminal::new(backend)?;
-    terminal.clear()?;
     let hub_id = Uuid::new_v4();
     let mut hub = Hub::new("test0".to_string(), hub_id, user_id);
     let channel_id = hub
@@ -36,100 +43,87 @@ async fn main() -> Result<(), io::Error> {
     }
     let mut hubs = HashMap::new();
     hubs.insert(hub_id, hub);
-    render(&mut terminal, &user_id, &channel_id, &hub_id, &hubs).await?;
+    render(siv);
     Ok(())
 }
 
-async fn render(
-    terminal: &mut Terminal<CrosstermBackend<Stdout>>,
-    user_id: &Uuid,
-    current_channel: &Uuid,
-    hub: &Uuid,
-    hubs: &HashMap<Uuid, Hub>,
-) -> io::Result<()> {
-    let hchunks = Layout::default()
-        .direction(Direction::Horizontal)
-        .margin(0)
-        .constraints([
-            Constraint::Percentage(10),
-            Constraint::Percentage(10),
-            Constraint::Percentage(70),
-            Constraint::Percentage(10),
-        ])
-        .split(terminal.size()?);
-    let vchunks = Layout::default()
-        .direction(Direction::Vertical)
-        .margin(0)
-        .constraints([Constraint::Percentage(20), Constraint::Percentage(80)]);
-    let hub_chunks = vchunks.split(hchunks[0]);
-    let channel_chunks = vchunks.split(hchunks[1]);
-    let message_chunks = Layout::default()
-        .margin(0)
-        .constraints([Constraint::Percentage(90), Constraint::Percentage(10)])
-        .split(hchunks[2]);
-    let user_chunks = vchunks.split(hchunks[3]);
+fn render(mut c: CursiveRunnable) {
+    let mut theme = Theme::default();
+    theme.shadow = false;
+    menubar(c.menubar());
+    c.set_autohide_menu(false);
+    c.set_theme(theme);
+    let layout = OnLayoutView::new(LinearLayout::horizontal(), |v, s| {
+        let width = dbg!(s).x;
+        let mut remaining_width = width;
+        let hub_width = (s.x as f32 * 15f32 / 100f32) as usize;
+        remaining_width -= hub_width;
+        v.add_child(hub_area().fixed_width(hub_width));
+        v.add_child(channel_area().fixed_width(remaining_width));
+        v.layout(s)
+    });
+    c.add_fullscreen_layer(layout);
+    c.run();
+}
 
-    let hub = hubs.get(hub).expect("Cannot find current hub.");
-    let channel = hub
-        .channels
-        .get(current_channel)
-        .expect("Current hub does not contain current channel.");
+fn channel_area() -> LinearLayout {
+    LinearLayout::vertical()
+        .child(
+            Panel::new(TextView::new(
+                "Name: {placeholder for name}\nDescription: {placeholder for description}",
+            ))
+            .title("Current Channel")
+            .title_position(HAlign::Left),
+        )
+        .child(
+            Panel::new(ListView::default().full_height())
+                .title("Messages")
+                .title_position(HAlign::Left),
+        )
+        .child(
+            Panel::new(TextArea::default().content("Write new message here..."))
+                .title("New Message")
+                .title_position(HAlign::Left),
+        )
+}
 
-    let current_hub = create_paragraph(hub.name.to_string(), hub.description.to_string());
-    let hub_list = create_paragraph(
+fn hub_area() -> LinearLayout {
+    LinearLayout::vertical()
+        .child(
+            Panel::new(TextView::new(
+                "Name: {placeholder for name}\nDescription: {placeholder for description}",
+            ))
+            .title("Current Hub")
+            .title_position(HAlign::Left),
+        )
+        .child(
+            Panel::new(ListView::default().full_height())
+                .title("Hubs")
+                .title_position(HAlign::Left),
+        )
+}
+
+fn menubar(menubar: &mut Menubar) {
+    menubar.add_leaf("X", |s| s.quit()).add_subtree(
         "Hubs",
-        iter_to_text(hubs.iter().map(|(_, h)| h.name.to_string())),
-    );
-    let current_channel =
-        create_paragraph(channel.name.to_string(), channel.description.to_string());
-    let channel_list = create_paragraph(
-        "Channels",
-        iter_to_text(hub.channels.iter().map(|(_, c)| c.name.to_string())),
-    );
-    let message_list = create_paragraph(
-        "Messages",
-        iter_to_text(dbg!(channel.get_last_messages(100).await).iter().map(|m| {
-            format!(
-                "{} [{}] {}",
-                m.created.format("%H:%M:%S").to_string(),
-                m.sender.to_string(),
-                m.content
+        MenuTree::default().leaf("Join...", |s| {
+            s.add_layer(
+                Dialog::default()
+                    .title("Join Hub")
+                    .dismiss_button("X")
+                    .content(
+                        ListView::new()
+                            .child("", TextView::new("Enter UUID of hub to join:"))
+                            .child(
+                                "",
+                                EditView::default()
+                                    .on_submit(|s, _text| {
+                                        s.pop_layer();
+                                    })
+                                    .resized(SizeConstraint::AtLeast(36), SizeConstraint::Free),
+                            ),
+                    ),
             )
-        })),
+        }),
     );
-    let current_user = create_paragraph("You", user_id.to_string());
-    let user_list = create_paragraph(
-        "Users",
-        iter_to_text(hub.members.iter().map(|(i, _)| i.to_string())),
-    );
-    terminal.draw(|f| {
-        f.render_widget(current_hub, hub_chunks[0]);
-        f.render_widget(hub_list, hub_chunks[1]);
-        f.render_widget(current_channel, channel_chunks[0]);
-        f.render_widget(channel_list, channel_chunks[1]);
-        f.render_widget(message_list, message_chunks[0]);
-        f.render_widget(current_user, user_chunks[0]);
-        f.render_widget(user_list, user_chunks[1]);
-    })?;
-    Ok(())
-}
-
-fn iter_to_text<'a, I, S>(iter: I) -> Text<'a>
-where
-    S: std::fmt::Display,
-    I: IntoIterator<Item = S>,
-{
-    let mut text = Text::default();
-    for item in iter {
-        text.extend(Text::from(format!("{}\n", item)));
-    }
-    text
-}
-
-fn create_paragraph<'a, T, S>(title: S, text: T) -> Paragraph<'a>
-where
-    T: Into<Text<'a>>,
-    S: Into<Spans<'a>>,
-{
-    Paragraph::new(text).block(Block::default().borders(Borders::ALL).title(title))
 }
