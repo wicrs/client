@@ -14,12 +14,14 @@ use cursive::views::Menubar;
 use cursive::views::OnLayoutView;
 use cursive::views::Panel;
 use cursive::views::ResizedView;
-use cursive::views::TextArea;
+use cursive::views::ScrollView;
 use cursive::views::TextView;
+use cursive::Cursive;
 use cursive::CursiveRunnable;
 use cursive::Rect;
 use cursive::View;
 use cursive::XY;
+use futures::executor::block_on;
 use std::collections::HashMap;
 use uuid::Uuid;
 use wicrs_api::wicrs_server::channel::Message;
@@ -28,8 +30,8 @@ use wicrs_api::wicrs_server::prelude::Hub;
 #[derive(Debug)]
 struct State {
     user_id: Uuid,
-    selected_hub: Uuid,
-    selected_channel: Uuid,
+    selected_hub: Option<Uuid>,
+    selected_channel: Option<Uuid>,
     hubs: HashMap<Uuid, Hub>,
 }
 
@@ -75,15 +77,15 @@ async fn main() -> Result<(), std::io::Error> {
     }
     cursive_runner.set_user_data(State {
         user_id,
-        selected_hub: hub_id,
-        selected_channel: channel_id,
+        selected_hub: Some(hub_id),
+        selected_channel: Some(channel_id),
         hubs,
     });
-    render(&mut cursive_runner);
+    start_render(&mut cursive_runner).await;
     Ok(())
 }
 
-fn render(c: &mut CursiveRunnable) {
+async fn start_render(c: &mut CursiveRunnable) {
     let theme = Theme {
         shadow: false,
         ..Default::default()
@@ -91,12 +93,19 @@ fn render(c: &mut CursiveRunnable) {
     menubar(c.menubar());
     c.add_global_callback(Key::Esc, |s| s.select_menubar());
     c.set_theme(theme);
-    let hub = hub_area(c);
-    let channel = channel_area(c);
-    let message = message_area(c);
+    render(c).await;
+    c.run();
+}
+
+async fn render(c: &mut Cursive) {
+    c.pop_layer();
+    let state = c.user_data::<State>().unwrap();
+    let hub = hub_area(state).await;
+    let channel = channel_area(state).await;
+    let message = message_area(state).await;
     let user = Panel::new(TextView::new(format!(
         "Eventually user info will be here...\nID: {}",
-        c.user_data::<State>().unwrap().user_id.to_string()
+        state.user_id.to_string()
     )))
     .title("Users")
     .title_position(HAlign::Left);
@@ -116,19 +125,22 @@ fn render(c: &mut CursiveRunnable) {
             .get_child_mut(0)
             .unwrap()
             .required_size(XY::new(hub_width, s.y))
-            .x;
+            .x
+            + 1;
         let mut channel_width = s.x * 15 / 100;
         channel_width = fixed_layout
             .get_child_mut(1)
             .unwrap()
             .required_size(XY::new(channel_width, s.y))
-            .x;
+            .x
+            + 1;
         let mut user_width = s.x * 15 / 100;
         user_width = fixed_layout
             .get_child_mut(3)
             .unwrap()
             .required_size(XY::new(user_width, s.y))
-            .x;
+            .x
+            + 1;
         let message_width = s.x - hub_width - channel_width - user_width;
         let hub_pos = Rect::from_size((0, 0), (hub_width, s.y));
         let channel_pos = Rect::from_size((hub_width + 1, 0), (channel_width, s.y));
@@ -143,84 +155,121 @@ fn render(c: &mut CursiveRunnable) {
         fixed_layout.set_child_position(3, user_pos);
         v.layout(s)
     }));
-    c.run();
 }
 
-fn channel_area(c: &mut CursiveRunnable) -> LinearLayout {
-    dbg!(c.user_data::<State>().unwrap().selected_channel);
-    let state = c.user_data::<State>().unwrap();
-    let hub = state.hubs.get(&state.selected_hub).unwrap();
-    let mut channel_list = ListView::default();
-    for (id, channel) in &hub.channels {
-        let id = *id;
-        let item = Button::new_raw(
-            if id == state.selected_channel {
-                format!("<{}>", channel.name)
-            } else {
-                channel.name.clone()
-            },
-            move |c| {
-                c.user_data::<State>().unwrap().selected_channel = id;
-                println!("selected channel {}", id.to_string())
-            },
+fn srender(c: &mut Cursive) {
+    block_on(render(c));
+}
+
+async fn channel_area(state: &mut State) -> LinearLayout {
+    let mut layout = LinearLayout::vertical();
+    if let Some(hub_id) = state.selected_hub {
+        let hub = state.hubs.get(&hub_id).unwrap();
+        let mut channel_list = ListView::default();
+        for (id, channel) in &hub.channels {
+            let id = *id;
+            let item = Button::new_raw(&channel.name, move |c| {
+                c.user_data::<State>().unwrap().selected_channel = Some(id);
+                srender(c);
+            });
+            channel_list.add_child("", item)
+        }
+        layout.add_child(
+            Panel::new(channel_list.full_height())
+                .title("Channels")
+                .title_position(HAlign::Left),
         );
-        channel_list.add_child("", item)
+    } else {
+        layout.add_child(
+            Panel::new(TextView::new("").full_height())
+                .title("Channels")
+                .title_position(HAlign::Left),
+        );
     }
-    LinearLayout::vertical().child(
-        Panel::new(channel_list.full_height())
-            .title("Messages")
-            .title_position(HAlign::Left),
-    )
+    layout
 }
 
-fn message_area(c: &mut CursiveRunnable) -> LinearLayout {
-    let state = c.user_data::<State>().unwrap();
-    let hub = state.hubs.get(&state.selected_hub).unwrap();
-    let hub_text = format!("Name: {}\nDescription: {}", hub.name, hub.description);
-    let channel = hub.channels.get(&state.selected_channel).unwrap();
-    let channel_text = format!(
-        "Name: {}\nDescription: {}",
-        channel.name, channel.description
-    );
-    LinearLayout::vertical()
-        .child(
+async fn message_area(state: &mut State) -> LinearLayout {
+    let mut layout = LinearLayout::vertical();
+    if let Some(hub_id) = state.selected_hub {
+        let hub = state.hubs.get(&hub_id).unwrap();
+        let hub_text = format!("Name: {}\nDescription: {}", hub.name, hub.description);
+        layout.add_child(
             Panel::new(TextView::new(hub_text))
                 .title("Current Hub")
                 .title_position(HAlign::Left),
-        )
-        .child(
-            Panel::new(TextView::new(channel_text))
-                .title("Current Channel")
-                .title_position(HAlign::Left),
-        )
-        .child(
-            Panel::new(ListView::default().full_height())
-                .title("Messages")
-                .title_position(HAlign::Left),
-        )
-        .child(
-            Panel::new(TextArea::default().content("Write new message here..."))
+        );
+        if let Some(channel_id) = state.selected_channel {
+            let channel = hub.channels.get(&channel_id).unwrap();
+            let channel_text = format!(
+                "Name: {}\nDescription: {}",
+                channel.name, channel.description
+            );
+            let mut message_list = ListView::default();
+
+            for message in channel.get_last_messages(100).await {
+                message_list.add_child(
+                    "",
+                    TextView::new(format!(
+                        "{} [{}]: {}",
+                        message.created.format("%H:%M:%S").to_string(),
+                        message.sender.to_string(),
+                        message.content
+                    )),
+                )
+            }
+            layout.add_child(
+                Panel::new(TextView::new(channel_text))
+                    .title("Current Channel")
+                    .title_position(HAlign::Left),
+            );
+            let mut scroll = ScrollView::new(message_list);
+            scroll.scroll_to_bottom();
+            layout.add_child(
+                Panel::new(scroll.full_height())
+                    .title("Messages")
+                    .title_position(HAlign::Left),
+            );
+            layout.add_child(
+                Panel::new(EditView::new().on_submit(|c, text| {
+                    let state = c.user_data::<State>().unwrap();
+                    let hub = state.hubs.get(&state.selected_hub.unwrap()).unwrap();
+                    let channel = hub.channels.get(&state.selected_channel.unwrap()).unwrap();
+                    block_on(channel.add_message(Message::new(
+                        state.user_id,
+                        text.to_string(),
+                        state.selected_hub.unwrap(),
+                        state.selected_channel.unwrap(),
+                    )))
+                    .unwrap();
+                    srender(c)
+                }))
                 .title("New Message")
                 .title_position(HAlign::Left),
-        )
+            );
+        } else {
+            layout.add_child(Panel::new(
+                TextView::new("Please select a channel...").full_height(),
+            ));
+        }
+    } else {
+        layout.add_child(Panel::new(
+            TextView::new("Please select a hub...").full_height(),
+        ));
+    }
+    layout
 }
 
-fn hub_area(c: &mut CursiveRunnable) -> Panel<ListView> {
-    let state = c.user_data::<State>().unwrap();
+async fn hub_area(state: &mut State) -> Panel<ListView> {
     let mut hub_list = ListView::default();
     for (id, hub) in &state.hubs {
         let id = *id;
-        let item = Button::new_raw(
-            if id == state.selected_hub {
-                format!("<{}>", hub.name)
-            } else {
-                hub.name.clone()
-            },
-            move |c| {
-                c.user_data::<State>().unwrap().selected_hub = id;
-                println!("selected hub {}", id.to_string())
-            },
-        );
+        let item = Button::new_raw(&hub.name, move |c| {
+            let user_data = c.user_data::<State>().unwrap();
+            user_data.selected_hub = Some(id);
+            user_data.selected_channel = None;
+            srender(c);
+        });
         hub_list.add_child("", item)
     }
     Panel::new(hub_list)

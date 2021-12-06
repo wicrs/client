@@ -2422,6 +2422,7 @@ dependencies = [
  "chrono",
  "crossterm 0.22.1",
  "cursive",
+ "futures",
  "log",
  "tokio",
  "uuid",
