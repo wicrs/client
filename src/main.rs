@@ -62,7 +62,7 @@ async fn main() -> Result<(), std::io::Error> {
         let id = Uuid::new_v4();
         hubs.insert(id, Hub::new(format!("test{}", i), id, user_id));
     }
-    for (_, hub) in &mut hubs {
+    for hub in hubs.values_mut() {
         for i in 0..10 {
             hub.new_channel(
                 &user_id,
@@ -84,8 +84,10 @@ async fn main() -> Result<(), std::io::Error> {
 }
 
 fn render(c: &mut CursiveRunnable) {
-    let mut theme = Theme::default();
-    theme.shadow = false;
+    let theme = Theme {
+        shadow: false,
+        ..Default::default()
+    };
     menubar(c.menubar());
     c.add_global_callback(Key::Esc, |s| s.select_menubar());
     c.set_theme(theme);
