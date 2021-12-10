@@ -1,8 +1,8 @@
 use cursive::align::HAlign;
-use cursive::event::Key;
 use cursive::menu::MenuTree;
 use cursive::theme::Theme;
 use cursive::traits::Boxable;
+use cursive::traits::Nameable;
 use cursive::view::SizeConstraint;
 use cursive::views::Button;
 use cursive::views::Dialog;
@@ -11,6 +11,7 @@ use cursive::views::FixedLayout;
 use cursive::views::LinearLayout;
 use cursive::views::ListView;
 use cursive::views::Menubar;
+use cursive::views::NamedView;
 use cursive::views::OnLayoutView;
 use cursive::views::Panel;
 use cursive::views::ResizedView;
@@ -26,6 +27,7 @@ use std::collections::HashMap;
 use uuid::Uuid;
 use wicrs_api::wicrs_server::channel::Message;
 use wicrs_api::wicrs_server::prelude::Hub;
+use wicrs_api::Result;
 
 #[derive(Debug)]
 struct State {
@@ -37,78 +39,73 @@ struct State {
 
 #[tokio::main]
 async fn main() -> Result<(), std::io::Error> {
-    let mut cursive_runner = cursive::default();
-    let user_id = Uuid::new_v4();
-    let hub_id = Uuid::new_v4();
-    let mut hub = Hub::new("test0".to_string(), hub_id, user_id);
-    hub.description = "A hub for testing WICRS client.".to_string();
-    let channel_id = hub
-        .new_channel(&user_id, "chat".to_string(), "A place to chat.".to_string())
-        .await
-        .unwrap();
-    let channel = hub.channels.get(&channel_id).unwrap();
-    for i in 0..10usize {
-        channel
-            .add_message(Message::new(
-                user_id,
-                format!("Test message {:02}.", i),
-                hub_id,
-                channel_id,
-            ))
-            .await
-            .unwrap();
-    }
+    let mut cursive_runner = cursive::crossterm();
+    let user_id = Uuid::from_u128(128);
+    std::fs::create_dir_all("data/hubs/info").unwrap();
     let mut hubs = HashMap::new();
-    hubs.insert(hub_id, hub);
-    for i in 1..10 {
-        let id = Uuid::new_v4();
-        hubs.insert(id, Hub::new(format!("test{}", i), id, user_id));
+    for file in std::fs::read_dir("data/hubs/info").unwrap() {
+        let id = Uuid::parse_str(&file.unwrap().file_name().to_string_lossy()).unwrap();
+        let mut hub = Hub::load(id).await.unwrap();
+        if hub.user_join(user_id).is_ok() {
+            let _ = hub.save().await;
+        }
+        hubs.insert(id, hub);
     }
-    for hub in hubs.values_mut() {
-        for i in 0..10 {
-            hub.new_channel(
-                &user_id,
-                format!("test{}", i),
-                "A channel for testing.".to_string(),
-            )
-            .await
-            .unwrap();
+    if hubs.is_empty() {
+        for h in 0..9u128 {
+            let mut hub = Hub::new(format!("hub-{}", h), Uuid::from_u128(h), user_id);
+            hub.description = format!("A hub for testing (#{}).", h);
+            for c in 0..9u128 {
+                let _ = hub
+                    .new_channel(
+                        &user_id,
+                        format!("channel-{}", c),
+                        format!("A channel for testing (#{}).", c),
+                    )
+                    .await;
+            }
+            let _ = hub.save().await;
+            hubs.insert(hub.id, hub);
         }
     }
     cursive_runner.set_user_data(State {
         user_id,
-        selected_hub: Some(hub_id),
-        selected_channel: Some(channel_id),
+        selected_hub: None,
+        selected_channel: None,
         hubs,
     });
-    start_render(&mut cursive_runner).await;
+    start_render(&mut cursive_runner);
     Ok(())
 }
 
-async fn start_render(c: &mut CursiveRunnable) {
+fn start_render(c: &mut CursiveRunnable) {
     let theme = Theme {
         shadow: false,
         ..Default::default()
     };
-    menubar(c.menubar());
-    c.add_global_callback(Key::Esc, |s| s.select_menubar());
+    c.set_autohide_menu(false);
     c.set_theme(theme);
-    render(c).await;
+    menubar(c.menubar());
+    render(c);
     c.run();
 }
 
-async fn render(c: &mut Cursive) {
+fn render(c: &mut Cursive) {
     c.pop_layer();
-    let state = c.user_data::<State>().unwrap();
-    let hub = hub_area(state).await;
-    let channel = channel_area(state).await;
-    let message = message_area(state).await;
+    let state = get_state(c);
+    let hub = hub_area();
+    let channel = channel_area();
+    let message = message_area();
     let user = Panel::new(TextView::new(format!(
         "Eventually user info will be here...\nID: {}",
         state.user_id.to_string()
     )))
     .title("Users")
     .title_position(HAlign::Left);
+    let mut hubs = Vec::new();
+    for (id, hub) in &state.hubs {
+        hubs.push((*id, hub.name.clone()));
+    }
     let resized_view = ResizedView::new(
         SizeConstraint::Full,
         SizeConstraint::Full,
@@ -155,144 +152,311 @@ async fn render(c: &mut Cursive) {
         fixed_layout.set_child_position(3, user_pos);
         v.layout(s)
     }));
+    for (id, name) in hubs {
+        add_hub_to_list(c, id, &name);
+    }
 }
 
-fn srender(c: &mut Cursive) {
-    block_on(render(c));
+fn message_area() -> LinearLayout {
+    LinearLayout::vertical()
+        .child(
+            Panel::new(TextView::new("No hub selected...").with_name("hub_info"))
+                .title("Hub Info")
+                .title_position(HAlign::Left),
+        )
+        .child(
+            Panel::new(TextView::new("No channel selected...").with_name("channel_info"))
+                .title("Channel Info")
+                .title_position(HAlign::Left),
+        )
+        .child(
+            Panel::new(
+                ScrollView::new(ListView::default().with_name("message_list")).full_height(),
+            )
+            .title("Messages")
+            .title_position(HAlign::Left),
+        )
+        .child(
+            Panel::new(
+                EditView::new()
+                    .on_submit(|c, text| {
+                        let state = get_state(c);
+                        if let (Some(hub_id), Some(channel_id)) =
+                            (state.selected_hub, state.selected_channel)
+                        {
+                            if let Some(hub) = state.hubs.get(&hub_id) {
+                                let send = block_on(hub.send_message(
+                                    state.user_id,
+                                    channel_id,
+                                    text.to_string(),
+                                ));
+                                if let Ok(m) = send {
+                                    new_message(c, m);
+                                    c.call_on_name("message_box", |v: &mut EditView| {
+                                        v.set_content("");
+                                    });
+                                    c.focus_name("message_box").unwrap();
+                                } else {
+                                    error(
+                                        c,
+                                        &format!(
+                                            "Failed to send message: {}",
+                                            send.unwrap_err().to_string()
+                                        ),
+                                    );
+                                }
+                            } else {
+                                error(c, "Could not find selected hub.");
+                            }
+                        } else {
+                            error(
+                                c,
+                                "You must select a hub and a channel before sending messages.",
+                            );
+                        }
+                    })
+                    .with_name("message_box"),
+            )
+            .title("Send Message")
+            .title_position(HAlign::Left),
+        )
 }
 
-async fn channel_area(state: &mut State) -> LinearLayout {
-    let mut layout = LinearLayout::vertical();
-    if let Some(hub_id) = state.selected_hub {
-        let hub = state.hubs.get(&hub_id).unwrap();
-        let mut channel_list = ListView::default();
-        for (id, channel) in &hub.channels {
-            let id = *id;
-            let item = Button::new_raw(&channel.name, move |c| {
-                c.user_data::<State>().unwrap().selected_channel = Some(id);
-                srender(c);
+fn new_message(c: &mut Cursive, message: Message) {
+    let state = get_state(c);
+    if let (Some(hub_id), Some(channel_id)) = (state.selected_hub, state.selected_channel) {
+        if message.hub_id == hub_id && message.channel_id == channel_id {
+            c.call_on_name("message_list", |v: &mut ListView| {
+                v.add_child("", TextView::new(message_string(message)))
             });
-            channel_list.add_child("", item)
         }
-        layout.add_child(
-            Panel::new(channel_list.full_height())
-                .title("Channels")
-                .title_position(HAlign::Left),
-        );
-    } else {
-        layout.add_child(
-            Panel::new(TextView::new("").full_height())
-                .title("Channels")
-                .title_position(HAlign::Left),
-        );
     }
-    layout
 }
 
-async fn message_area(state: &mut State) -> LinearLayout {
-    let mut layout = LinearLayout::vertical();
-    if let Some(hub_id) = state.selected_hub {
-        let hub = state.hubs.get(&hub_id).unwrap();
-        let hub_text = format!("Name: {}\nDescription: {}", hub.name, hub.description);
-        layout.add_child(
-            Panel::new(TextView::new(hub_text))
-                .title("Current Hub")
-                .title_position(HAlign::Left),
-        );
-        if let Some(channel_id) = state.selected_channel {
-            let channel = hub.channels.get(&channel_id).unwrap();
-            let channel_text = format!(
-                "Name: {}\nDescription: {}",
-                channel.name, channel.description
-            );
-            let mut message_list = ListView::default();
-
-            for message in channel.get_last_messages(100).await {
-                message_list.add_child(
-                    "",
-                    TextView::new(format!(
-                        "{} [{}]: {}",
-                        message.created.format("%H:%M:%S").to_string(),
-                        message.sender.to_string(),
-                        message.content
-                    )),
-                )
-            }
-            layout.add_child(
-                Panel::new(TextView::new(channel_text))
-                    .title("Current Channel")
-                    .title_position(HAlign::Left),
-            );
-            let mut scroll = ScrollView::new(message_list);
-            scroll.scroll_to_bottom();
-            layout.add_child(
-                Panel::new(scroll.full_height())
-                    .title("Messages")
-                    .title_position(HAlign::Left),
-            );
-            layout.add_child(
-                Panel::new(EditView::new().on_submit(|c, text| {
-                    let state = c.user_data::<State>().unwrap();
-                    let hub = state.hubs.get(&state.selected_hub.unwrap()).unwrap();
-                    let channel = hub.channels.get(&state.selected_channel.unwrap()).unwrap();
-                    block_on(channel.add_message(Message::new(
-                        state.user_id,
-                        text.to_string(),
-                        state.selected_hub.unwrap(),
-                        state.selected_channel.unwrap(),
-                    )))
-                    .unwrap();
-                    srender(c)
-                }))
-                .title("New Message")
-                .title_position(HAlign::Left),
-            );
-        } else {
-            layout.add_child(Panel::new(
-                TextView::new("Please select a channel...").full_height(),
-            ));
-        }
-    } else {
-        layout.add_child(Panel::new(
-            TextView::new("Please select a hub...").full_height(),
-        ));
-    }
-    layout
+fn message_string(message: Message) -> String {
+    format!(
+        "{} [{}]: {}",
+        message
+            .created
+            .with_timezone(&chrono::Local)
+            .format("%H:%M:%S")
+            .to_string(),
+        message.sender.to_string(),
+        message.content
+    )
 }
 
-async fn hub_area(state: &mut State) -> Panel<ListView> {
-    let mut hub_list = ListView::default();
-    for (id, hub) in &state.hubs {
-        let id = *id;
-        let item = Button::new_raw(&hub.name, move |c| {
-            let user_data = c.user_data::<State>().unwrap();
-            user_data.selected_hub = Some(id);
-            user_data.selected_channel = None;
-            srender(c);
-        });
-        hub_list.add_child("", item)
-    }
-    Panel::new(hub_list)
+fn channel_area() -> Panel<ResizedView<NamedView<ListView>>> {
+    Panel::new(ListView::default().with_name("channel_list").full_height())
+        .title("Channels")
+        .title_position(HAlign::Left)
+}
+
+fn hub_area() -> Panel<NamedView<ListView>> {
+    Panel::new(ListView::default().with_name("hub_list"))
         .title("Hubs")
         .title_position(HAlign::Left)
 }
 
+fn add_hub_to_list(c: &mut Cursive, id: Uuid, name: &str) {
+    let item = Button::new_raw(name, move |c| {
+        select_hub(c, id);
+    });
+    c.call_on_name("hub_list", |v: &mut ListView| v.add_child("", item));
+}
+
+fn add_channel_to_list(c: &mut Cursive, id: Uuid, name: &str) {
+    let item = Button::new_raw(name, move |c| {
+        select_channel(c, id);
+    });
+    c.call_on_name("channel_list", |v: &mut ListView| v.add_child("", item));
+}
+
+fn get_state(c: &mut Cursive) -> &mut State {
+    c.user_data::<State>()
+        .expect("unable to get application state")
+}
+
+fn select_hub(c: &mut Cursive, id: Uuid) {
+    let state = get_state(c);
+    state.selected_hub = Some(id);
+    state.selected_channel = None;
+    let name;
+    let description;
+    let mut channels = Vec::new();
+    if let Some(hub) = state.hubs.get(&id) {
+        name = hub.name.clone();
+        description = hub.description.clone();
+        for (id, channel) in &hub.channels {
+            channels.push((*id, channel.name.clone()));
+        }
+    } else {
+        error(c, "Hub does not exist locally.");
+        return;
+    }
+    c.call_on_name("hub_info", |v: &mut TextView| {
+        v.set_content(format!("Name: {}\nDescription: {}", name, description));
+    });
+    c.call_on_name("channel_info", |v: &mut TextView| {
+        v.set_content("No channel selected...");
+    });
+    c.call_on_name("channel_list", |v: &mut ListView| v.clear());
+    c.call_on_name("message_list", |v: &mut ListView| v.clear());
+    for (id, name) in channels {
+        add_channel_to_list(c, id, &name);
+    }
+}
+
+fn select_channel(c: &mut Cursive, id: Uuid) {
+    let mut messages = Vec::new();
+    let name;
+    let description;
+    let state = get_state(c);
+    if let Some(hub_id) = state.selected_hub {
+        if let Some(hub) = state.hubs.get(&hub_id) {
+            if let Some(channel) = hub.channels.get(&id) {
+                name = channel.name.clone();
+                description = channel.description.clone();
+                for message in block_on(channel.get_last_messages(200)) {
+                    messages.push(message_string(message));
+                }
+            } else {
+                error(c, "Could not find channel.");
+                return;
+            }
+        } else {
+            error(c, "Could not find hub.");
+            return;
+        }
+    } else {
+        error(c, "No hub selected...");
+        return;
+    }
+    get_state(c).selected_channel = Some(id);
+    c.call_on_name("channel_info", |v: &mut TextView| {
+        v.set_content(format!("Name: {}\nDescription: {}", name, description));
+    });
+    c.call_on_name("message_list", |v: &mut ListView| {
+        v.clear();
+        for message in messages {
+            v.add_child("", TextView::new(message));
+        }
+    });
+}
+
+fn error(c: &mut Cursive, message: &str) {
+    c.add_layer(
+        Dialog::default()
+            .title("Error")
+            .dismiss_button("Ok")
+            .content(TextView::new(message)),
+    );
+}
+
 fn menubar(menubar: &mut Menubar) {
-    menubar.add_leaf("Quit", |s| s.quit()).add_subtree(
+    menubar.add_subtree(
         "Hubs",
-        MenuTree::default().leaf("Join...", |s| {
-            s.add_layer(
+        MenuTree::default()
+            .leaf("Join", |c| {
+                c.add_layer(
+                    Dialog::default()
+                        .title("Join Hub")
+                        .dismiss_button("Cancel")
+                        .content(
+                            ListView::new()
+                                .child("", TextView::new("Enter UUID of hub to join:"))
+                                .child(
+                                    "",
+                                    EditView::default()
+                                        .on_submit(|c, _text| {
+                                            c.pop_layer();
+                                        })
+                                        .resized(SizeConstraint::AtLeast(36), SizeConstraint::Free),
+                                ),
+                        ),
+                )
+            })
+            .leaf("Create", |c| {
+                c.add_layer(
+                    Dialog::default()
+                        .title("Create Hub")
+                        .dismiss_button("Cancel")
+                        .content(
+                            ListView::new()
+                                .child("", TextView::new("Enter name of new hub:"))
+                                .child(
+                                    "",
+                                    EditView::default()
+                                        .on_submit(|c, text| {
+                                            let state = get_state(c);
+                                            let hub_id = Uuid::new_v4();
+                                            let hub =
+                                                Hub::new(text.to_string(), hub_id, state.user_id);
+                                            if let Err(e) = block_on(hub.save()) {
+                                                c.pop_layer();
+                                                error(
+                                                    c,
+                                                    &format!(
+                                                        "Could not save the new hub: {}",
+                                                        e.to_string()
+                                                    ),
+                                                );
+                                            } else {
+                                                let name = hub.name.clone();
+                                                state.hubs.insert(hub_id, hub);
+                                                add_hub_to_list(c, hub_id, &name);
+                                                select_hub(c, hub_id);
+                                                c.pop_layer();
+                                            }
+                                        })
+                                        .resized(SizeConstraint::AtLeast(36), SizeConstraint::Free),
+                                ),
+                        ),
+                )
+            }),
+    );
+    menubar.add_subtree(
+        "Channels",
+        MenuTree::default().leaf("Create", |c| {
+            c.add_layer(
                 Dialog::default()
-                    .title("Join Hub")
-                    .dismiss_button("X")
+                    .title("Create Channel")
+                    .dismiss_button("Cancel")
                     .content(
                         ListView::new()
-                            .child("", TextView::new("Enter UUID of hub to join:"))
+                            .child("", TextView::new("Enter name of new channel:"))
                             .child(
                                 "",
                                 EditView::default()
-                                    .on_submit(|s, _text| {
-                                        s.pop_layer();
+                                    .on_submit(|c, text| {
+                                        let state = get_state(c);
+                                        if let Some(hub_id) = state.selected_hub {
+                                            let hub = state.hubs.get_mut(&hub_id).unwrap();
+                                            let channel = block_on(hub.new_channel(
+                                                &state.user_id,
+                                                text.to_string(),
+                                                String::new(),
+                                            ));
+                                            if let Err(e) = block_on(hub.save()) {
+                                                c.pop_layer();
+                                                error(
+                                                    c,
+                                                    &format!(
+                                                        "Could not save the hub: {}",
+                                                        e.to_string()
+                                                    ),
+                                                );
+                                            } else {
+                                                let channel = channel.unwrap();
+                                                add_channel_to_list(c, channel, text);
+                                                c.pop_layer();
+                                            }
+                                        } else {
+                                            error(
+                                                c,
+                                                "You must select a hub before creating a channel.",
+                                            )
+                                        }
                                     })
                                     .resized(SizeConstraint::AtLeast(36), SizeConstraint::Free),
                             ),
